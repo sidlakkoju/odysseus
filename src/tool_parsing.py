@@ -382,6 +382,83 @@ def parse_tool_blocks(text: str) -> List[ToolBlock]:
             if block:
                 blocks.append(block)
 
+    # Pattern 5: Gemma native tool-call bridge. Gated — only fires when nothing
+    # else matched AND the text carries Gemma's specific call signature, so it's
+    # a no-op for every other model/format.
+    if not blocks:
+        blocks.extend(_parse_gemma_tool_calls(text))
+
+    return blocks
+
+
+# Gemma-family models emit tool calls in their own non-standard format that none
+# of the parsers above recognize, e.g.:
+#   ◁tool_call▷call:google:search{queries:[◁"▷q◁"▷]}◁/tool_call▷
+#   <|tool_call>call:search(query="...")
+# The delimiter renders differently by tokenizer (◁ ▷ glyphs, <| |>, < >), so we
+# allow spaces / pipes / slashes around the word. We don't execute these; we just
+# strip them (open token → close token, or to end-of-string if unclosed).
+_GEMMA_TOOL_RE = re.compile(
+    r'[◁<][\s|/]*tool_call[\s|/]*[▷>][\s\S]*?(?:[◁<][\s|/]*tool_call[\s|/]*[▷>]|$)',
+    re.IGNORECASE,
+)
+# Leftover bare Gemma special-token glyphs (e.g. ◁"▷, ◁end_of_turn▷).
+_GEMMA_STRAY_TOKEN_RE = re.compile(r'◁[^▷]{0,40}?▷')
+
+
+# ── Gemma tool-call bridge (agent mode) ──
+# Gemma-4 / 3n were trained on a Google-style tool API and emit, e.g.:
+#   <|tool_call>call:google:search{queries:[<|"|>q1<|"|>, <|"|>q2<|"|>]}<tool_call|>
+#   ◁tool_call▷call:search{queries:[◁"▷q◁"▷]}◁/tool_call▷
+#   <|tool_call>call:search(query="...")
+# none of which the parsers above recognize. We bridge ONLY the calls we can
+# safely map to a real Odysseus tool (search -> web_search). _GEMMA_CALL_RE is
+# the gate: it matches only Gemma's signature, so this never affects other
+# models, and the token cleanup is scoped to the matched call's args.
+_GEMMA_CALL_RE = re.compile(
+    r'[◁<][\s|/]*tool_call[\s|/]*[▷>]\s*call\s*:\s*([\w:.\-]+)\s*([{(][\s\S]*?[})])',
+    re.IGNORECASE,
+)
+# Gemma's trained tool names -> Odysseus tools. Only search is safely bridgeable;
+# other Gemma calls are left unparsed (we don't fabricate calls it can't make).
+_GEMMA_TOOL_NAME_MAP = {
+    "google:search": "web_search", "google_search": "web_search",
+    "search": "web_search", "web_search": "web_search", "websearch": "web_search",
+}
+# Gemma wraps string literals in special-token glyphs (<|"|> or ◁"▷); normalize
+# them to a plain double-quote so the query strings can be read.
+_GEMMA_QUOTE_RE = re.compile(r'[◁<][\s|/]*"[\s|/]*[▷>]')
+
+
+def _parse_gemma_tool_calls(text: str) -> List["ToolBlock"]:
+    """Bridge Gemma's native tool-call format to Odysseus tool blocks.
+
+    Returns [] unless the text carries Gemma's specific call signature, so it is
+    a no-op for every other model. Currently maps only search -> web_search.
+    """
+    blocks: List[ToolBlock] = []
+    for m in _GEMMA_CALL_RE.finditer(text):
+        name = (m.group(1) or "").strip().lower()
+        mapped = _GEMMA_TOOL_NAME_MAP.get(name)
+        if mapped != "web_search":
+            continue  # only search is safe to bridge; don't fabricate others
+        args = _GEMMA_QUOTE_RE.sub('"', m.group(2) or "")  # scoped token cleanup
+        # queries:[ "a", "b" ]  (list form)
+        qlist = re.search(r'quer(?:y|ies)\s*[:=]\s*\[([\s\S]*?)\]', args, re.IGNORECASE)
+        if qlist:
+            queries = re.findall(r'["\']([^"\']+)["\']', qlist.group(1))
+        else:
+            # query="a"  (single/paren form), or bare query=a
+            single = re.search(r'quer(?:y|ies)\s*[:=]\s*["\']([^"\']+)["\']', args, re.IGNORECASE)
+            if single:
+                queries = [single.group(1)]
+            else:
+                bare = re.search(r'quer(?:y|ies)\s*[:=]\s*([^,)}\]]+)', args, re.IGNORECASE)
+                queries = [bare.group(1)] if bare else []
+        for q in queries[:3]:
+            q = q.strip().strip('"\',')
+            if q:
+                blocks.append(ToolBlock("web_search", q))
     return blocks
 
 
@@ -394,6 +471,9 @@ def strip_tool_blocks(text: str) -> str:
     cleaned = _TOOL_CALL_RE.sub('', cleaned)
     cleaned = _XML_TOOL_CALL_RE.sub('', cleaned)
     cleaned = _TOOL_CODE_RE.sub('', cleaned)
+    # Gemma native tool-call tokens + stray special-token glyphs.
+    cleaned = _GEMMA_TOOL_RE.sub('', cleaned)
+    cleaned = _GEMMA_STRAY_TOKEN_RE.sub('', cleaned)
     # Strip bare <invoke> blocks not wrapped in <tool_call>
     cleaned = re.sub(r'<invoke\s+name=["\'].*?</invoke>', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)

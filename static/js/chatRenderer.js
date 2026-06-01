@@ -392,6 +392,17 @@ const XML_INVOKE_RE = /<invoke\s+name=['"][^'"]*['"]>[\s\S]*?<\/invoke>/gi;
 // (e.g. mid-stream before the closing tag arrives).
 const DSML_TOOL_RE = /<\s*[｜|]+\s*DSML\s*[｜|]+\s*tool_calls\s*>[\s\S]*?(?:<\s*\/\s*[｜|]+\s*DSML\s*[｜|]+\s*tool_calls\s*>|$)/gi;
 const DSML_STRAY_RE = /<\s*\/?\s*[｜|]+\s*DSML\s*[｜|]+[^>]*>/gi;
+// Gemma-family native tool calls use special-token glyphs (◁ U+25C1 / ▷ U+25B7)
+// that no other pattern matches, e.g.
+//   ◁tool_call▷call:google:search{queries:[◁"▷q◁"▷]}◁/tool_call▷
+// We don't execute them (non-standard format); strip so they don't leak into
+// chat. Open token → close token (slash optional, glyph or ascii bracket), or
+// to end-of-string if the block was never closed (mid-stream).
+// Delimiters vary by tokenizer rendering: ◁tool_call▷, <|tool_call>, </tool_call>,
+// <|/tool_call|> … so allow spaces / pipes / slashes around the word.
+const GEMMA_TOOL_RE = /[◁<][\s|\/]*tool_call[\s|\/]*[▷>][\s\S]*?(?:[◁<][\s|\/]*tool_call[\s|\/]*[▷>]|$)/gi;
+// Stray Gemma special-token glyphs left over (◁"▷, ◁end_of_turn▷, ...).
+const GEMMA_STRAY_RE = /◁[^▷]{0,40}?▷/g;
 // Self-narration about tool results (model echoing stdout/exit_code)
 const TOOL_NARRATION_RE = /(?:The (?:result|output) shows?:?\s*)?-?\s*(?:stdout|stderr|exit_code):\s*.+/gi;
 
@@ -769,6 +780,8 @@ export function stripToolBlocks(text) {
   cleaned = cleaned.replace(EXEC_FENCE_RE, '');
   cleaned = cleaned.replace(DSML_TOOL_RE, '');
   cleaned = cleaned.replace(DSML_STRAY_RE, '');
+  cleaned = cleaned.replace(GEMMA_TOOL_RE, '');
+  cleaned = cleaned.replace(GEMMA_STRAY_RE, '');
   cleaned = cleaned.replace(XML_TOOL_CALL_RE, '');
   cleaned = cleaned.replace(XML_INVOKE_RE, '');
   cleaned = cleaned.replace(TOOL_NARRATION_RE, '');
