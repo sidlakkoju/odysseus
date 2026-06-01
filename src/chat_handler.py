@@ -151,6 +151,10 @@ class ChatHandler:
             "gpt-4o", "gpt-4.1", "gpt-4.5", "gpt-4-turbo", "gpt-4-vision",
             "claude-sonnet", "claude-opus", "claude-haiku",
             "gemini", "llava", "pixtral", "qwen2-vl", "qwen-vl", "qwen3-vl", "qwen3vl", "minicpm",
+            # Gemma 3 / 3n / 4 are multimodal (served with an mmproj vision head in
+            # llama.cpp). Gemma 2 and the gemma-3-1b text variant are not, but the
+            # only cost of a false positive is passing an image the model ignores.
+            "gemma-3", "gemma-4",
         ]
         main_model = (sess.model or "").lower()
         main_is_vision = any(kw in main_model for kw in VISION_KEYWORDS)
