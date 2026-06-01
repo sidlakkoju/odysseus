@@ -3848,6 +3848,13 @@ body.bg-pattern-sparkles {
         padding: 6px !important;
         border-radius: 12px !important;
       }
+      /* Prevent iOS Safari from auto-zooming when any input/textarea is
+         focused — the zoom triggers when font-size < 16px. We override to
+         16px here and restore the original size after focus so the field
+         never visually changes but iOS never gets a reason to zoom. */
+      input, textarea, select {
+        font-size: 16px !important;
+      }
       /* Safe area padding for notched devices */
       .chat-input-bar {
         padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
