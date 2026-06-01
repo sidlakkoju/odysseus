@@ -3855,6 +3855,15 @@ body.bg-pattern-sparkles {
       input, textarea, select {
         font-size: 16px !important;
       }
+      /* The element rule above loses to the GLOBAL `#message {
+         font-size: 13px !important }` (ID specificity) and to
+         `.chat-input-bar textarea#message { 14px }`, so the chat box
+         stayed < 16px and iOS kept auto-zooming on focus. Match their
+         specificity (class + element + id) WITH !important so the
+         message field is 16px on mobile and never triggers the zoom. */
+      .chat-input-bar textarea#message {
+        font-size: 16px !important;
+      }
       /* Safe area padding for notched devices */
       .chat-input-bar {
         padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
