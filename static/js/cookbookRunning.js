@@ -52,6 +52,12 @@ let _detectToolParser;
 let _detectModelOptimizations;
 let _buildServeCmd;
 
+// Discovered backend engines (vLLM/llama.cpp/Ollama/…) found via the /proc scan
+// on the server — including ones Cookbook didn't launch. Populated by
+// _refreshEngines(); rendered into the Running tab so you can kill them.
+let _discoveredEngines = [];
+let _enginesFetchedAt = 0;
+
 // When a new action is started (download / dependency / serve), this holds the
 // new task's id so the next render collapses every other card and leaves only
 // the new one open. Consumed (cleared) by _renderRunningTab.
@@ -1093,6 +1099,110 @@ export async function _launchServeTask(shortName, repo, cmd, fields, hostOverrid
   }
 }
 
+// ── Discovered engines (discover + kill + quick-start) ──
+
+// Fetch the live engine scan from the server, then re-render. Called on tab
+// open (debounced), the Refresh button, and after a kill / quick-start.
+export async function _refreshEngines() {
+  _enginesFetchedAt = Date.now();
+  try {
+    const r = await fetch('/api/cookbook/engines', { credentials: 'same-origin' });
+    if (r.ok) {
+      const d = await r.json();
+      _discoveredEngines = Array.isArray(d.engines) ? d.engines : [];
+    }
+  } catch { /* leave previous list on transient failure */ }
+  _renderRunningTab();
+}
+
+// Debounced auto-fetch so simply opening/redrawing the Running tab refreshes the
+// list without looping (render → refresh → render).
+function _maybeRefreshEngines() {
+  if (Date.now() - _enginesFetchedAt < 2500) return;
+  _refreshEngines();
+}
+
+async function _killEngine(pid, force) {
+  if (!pid) return;
+  const sig = force ? 'KILL' : 'TERM';
+  if (window.styledConfirm &&
+      !await window.styledConfirm(`Send SIG${sig} to pid ${pid}? The model server will stop.`, { confirmText: 'Kill' })) {
+    return;
+  }
+  try {
+    const r = await fetch('/api/cookbook/kill-pid', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pid, signal: sig }),
+    });
+    const d = await r.json();
+    if (d.ok) uiModule.showToast(`Sent SIG${sig} to pid ${pid}`);
+    else uiModule.showToast(`Kill failed: ${d.error || 'unknown error'}`);
+  } catch {
+    uiModule.showToast('Kill request failed');
+  }
+  setTimeout(_refreshEngines, 700);
+}
+
+// Render the "Running engines" panel into the Running group's admin-card.
+function _renderEnginesSection(adminCard) {
+  if (!adminCard) return;
+  const engines = _discoveredEngines || [];
+  const presets = (typeof _loadPresets === 'function' ? (_loadPresets() || []) : []);
+  let sec = adminCard.querySelector('.cookbook-engines-section');
+  if (!sec) {
+    sec = document.createElement('div');
+    sec.className = 'cookbook-engines-section';
+    sec.style.cssText = 'margin:8px 0 4px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;';
+    const desc = adminCard.querySelector('p.memory-desc');
+    if (desc && desc.nextSibling) adminCard.insertBefore(sec, desc.nextSibling);
+    else if (desc) adminCard.appendChild(sec);
+    else adminCard.insertBefore(sec, adminCard.firstChild);
+  }
+  const rows = engines.map(e => {
+    const port = e.port ? `:${e.port}` : '';
+    const reg = e.registered
+      ? '<span title="Connected to an Odysseus endpoint" style="color:var(--green);">●</span>'
+      : '<span title="Not registered in Odysseus" style="opacity:0.4;">○</span>';
+    const name = (e.model || '').split('/').pop() || e.label || '';
+    return `<div class="cookbook-engine-row" style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:0.85em;">
+      ${reg}
+      <span style="font-weight:600;min-width:70px;">${esc(e.label || '')}</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(e.cmdline_preview || '')}">${esc(name)}</span>
+      <span style="opacity:0.7;">${esc(port)}</span>
+      <span style="opacity:0.45;">pid ${e.pid}</span>
+      <button class="cookbook-btn" data-kill-pid="${e.pid}">Kill</button>
+      <button class="cookbook-btn" data-kill-pid="${e.pid}" data-force="1" title="Force kill (SIGKILL)">Kill&nbsp;-9</button>
+    </div>`;
+  }).join('');
+  const quick = presets.length
+    ? `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px;">
+         <span style="opacity:0.6;font-size:0.8em;">Quick start:</span>
+         ${presets.map((p, i) => `<button class="cookbook-btn" data-quickstart="${i}">${esc(p.name || p.model || ('preset ' + i))}&nbsp;▸</button>`).join('')}
+       </div>`
+    : `<div style="opacity:0.5;font-size:0.8em;margin-top:8px;">No saved presets. Launch from the <b>Serve</b> tab and save it as a preset for one-click start here.</div>`;
+  sec.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+      <span style="font-weight:600;font-size:0.9em;">Running engines</span>
+      <span style="opacity:0.5;font-size:0.8em;">${engines.length} discovered</span>
+      <button class="cookbook-btn" data-engines-refresh="1" style="margin-left:auto;">⟳ Refresh</button>
+    </div>
+    ${engines.length ? rows : '<div style="opacity:0.5;font-size:0.82em;padding:4px 0;">No model engines running on this host.</div>'}
+    ${quick}`;
+  sec.querySelectorAll('[data-kill-pid]').forEach(btn => {
+    btn.onclick = () => _killEngine(parseInt(btn.dataset.killPid, 10), btn.dataset.force === '1');
+  });
+  sec.querySelector('[data-engines-refresh]')?.addEventListener('click', () => _refreshEngines());
+  sec.querySelectorAll('[data-quickstart]').forEach(btn => {
+    btn.onclick = () => {
+      const p = presets[parseInt(btn.dataset.quickstart, 10)];
+      if (p && typeof _launchServeTask === 'function') {
+        _launchServeTask(p.name || p.model, p.model, p.cmd, p.fields, p.remoteHost);
+      }
+    };
+  });
+}
+
 // ── Render Running tab ──
 
 export function _renderRunningTab() {
@@ -1107,6 +1217,9 @@ export function _renderRunningTab() {
 
   const body = document.querySelector('#cookbook-modal .cookbook-body');
   if (!body) return;
+
+  // Pull a fresh engine scan (debounced) whenever the Running tab redraws.
+  _maybeRefreshEngines();
 
   // Capture expansion state so re-renders don't collapse whatever the user
   // had open. Task output: presence of .cookbook-task-collapsed means collapsed.
@@ -1141,7 +1254,9 @@ export function _renderRunningTab() {
   });
 
   const tasks = _loadTasks();
-  const hasContent = tasks.length > 0;
+  // Discovered engines also count as content, so the Running tab/panel shows up
+  // even when there are no Cookbook-tracked tasks (e.g. a manual/systemd server).
+  const hasContent = tasks.length > 0 || (_discoveredEngines && _discoveredEngines.length > 0);
 
   let tabBar = body.querySelector('.cookbook-tabs');
   if (!tabBar) return;
@@ -1199,6 +1314,8 @@ export function _renderRunningTab() {
   }
 
   const _adminCard = group.querySelector('.admin-card');
+  // Discovered-engines panel (discover + kill + quick-start) at the top.
+  _renderEnginesSection(_adminCard);
   function _ensureSection(cls, label, items) {
     let sec = group.querySelector('.' + cls);
     if (!sec) {

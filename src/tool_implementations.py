@@ -2837,6 +2837,16 @@ def _scan_running_model_processes() -> List[Dict[str, Any]]:
                         )):
                             model = tok
                             break
+                    # Pluck the serve port so the UI can show :PORT and match it to
+                    # a registered endpoint. Accepts `--port 8000` / `--port=8000`;
+                    # Ollama has no flag, so fall back to its well-known default.
+                    import re as _re
+                    port = None
+                    _pm = _re.search(r"--port[ =](\d{2,5})", cmdline)
+                    if _pm:
+                        port = int(_pm.group(1))
+                    elif label == "Ollama":
+                        port = 11434
                     out.append({
                         "session_id": f"pid-{pid_dir}",
                         "model": model or label,
@@ -2844,6 +2854,7 @@ def _scan_running_model_processes() -> List[Dict[str, Any]]:
                         "type": "serve",
                         "remote": "local",
                         "pid": int(pid_dir),
+                        "port": port,
                         "label": label,
                         "cmdline_preview": cmdline[:140] + ("…" if len(cmdline) > 140 else ""),
                         "external": True,

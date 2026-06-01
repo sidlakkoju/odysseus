@@ -1356,6 +1356,39 @@ def setup_cookbook_routes() -> APIRouter:
         except Exception as e:
             return {"ok": False, "error": str(e)[:200]}
 
+    @router.get("/api/cookbook/engines")
+    async def list_engines(request: Request):
+        """Discover model-serving engines actually running on this host.
+
+        Scans /proc for vLLM / llama.cpp / Ollama / SGLang / TGI / image-gen
+        backends — including ones NOT launched by Cookbook (manual runs, systemd
+        services) which the task tracker doesn't know about. Each entry carries
+        the pid + port so the UI can offer a Kill button (via /api/cookbook/kill-pid)
+        and match it against a registered model endpoint. Admin-gated.
+        """
+        require_admin(request)
+        from src.tool_implementations import _scan_running_model_processes
+        try:
+            engines = _scan_running_model_processes()
+        except Exception as e:
+            logger.warning("engine scan failed: %s", e)
+            engines = []
+        # Annotate each engine with whether its port matches a registered endpoint,
+        # so the UI can show "connected to Odysseus" vs an orphaned process.
+        try:
+            from core.database import SessionLocal, ModelEndpoint
+            db = SessionLocal()
+            try:
+                base_urls = [e.base_url for e in db.query(ModelEndpoint).all()]
+            finally:
+                db.close()
+            for eng in engines:
+                p = eng.get("port")
+                eng["registered"] = bool(p and any(f":{p}" in (u or "") for u in base_urls))
+        except Exception:
+            pass
+        return {"engines": engines}
+
     # ── Cookbook state persistence (cross-device sync) ──
 
     @router.get("/api/cookbook/state")
