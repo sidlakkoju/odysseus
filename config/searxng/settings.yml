@@ -1,7 +1,13 @@
+# Odysseus local SearXNG — minimal overrides merged onto SearXNG's built-in
+# defaults via use_default_settings. JSON output MUST be enabled for Odysseus's
+# API calls (SearXNG ships html-only by default).
+# NOTE: `formats` belongs under `search:` in current SearXNG, not `server:`.
 use_default_settings: true
 
 server:
-  secret_key: "odysseus-local-searxng-json-2026-05-30"
+  secret_key: "odysseus-local-searxng-json-2026-05-31"
+  # Disable the bot limiter so local programmatic JSON queries aren't throttled.
+  limiter: false
 
 search:
   formats:

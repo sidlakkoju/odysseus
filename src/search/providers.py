@@ -318,6 +318,22 @@ def duckduckgo_search(query: str, count: int = 10, time_filter: Optional[str] = 
                 url = link.get("href", "")
                 if not url:
                     continue
+                # DDG HTML wraps every result in a redirect:
+                #   //duckduckgo.com/l/?uddg=<url-encoded real URL>&rut=...
+                # The real page URL is in the `uddg` param. Without decoding it,
+                # downstream content extraction fetches the DDG redirect (which
+                # yields nothing) → "0 sources". Unwrap it to the actual target.
+                if "duckduckgo.com/l/" in url and "uddg=" in url:
+                    from urllib.parse import urlparse, parse_qs, unquote
+                    try:
+                        _u = url if url.startswith("http") else "https:" + url
+                        _uddg = parse_qs(urlparse(_u).query).get("uddg")
+                        if _uddg:
+                            url = unquote(_uddg[0])
+                    except Exception:
+                        pass
+                elif url.startswith("//"):
+                    url = "https:" + url
                 snippet_el = result.select_one(".result__snippet")
                 parsed.append({
                     "title": link.get_text(" ", strip=True),
